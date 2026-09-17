@@ -13,6 +13,7 @@
 <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
+<div id="app-shell">
 
   <!-- ============ BOOT / LOADING SCREEN ============ -->
   <div id="boot-screen">
@@ -275,10 +276,10 @@
       <button id="touch-right" class="touch-btn touch-steer-btn" aria-label="Steer right">▶</button>
     </div>
     <div id="touch-actions">
-      <button id="touch-drift" class="touch-btn touch-action-btn touch-drift-btn" aria-label="Drift">DRIFT</button>
-      <button id="touch-nos" class="touch-btn touch-action-btn touch-nos-btn" aria-label="Nitro">NOS</button>
-      <button id="touch-brake" class="touch-btn touch-action-btn touch-brake-btn" aria-label="Brake">BRAKE</button>
-      <button id="touch-gas" class="touch-btn touch-action-btn touch-gas-btn" aria-label="Gas">GAS</button>
+      <button id="touch-drift" class="touch-btn touch-chip-btn touch-drift-btn" aria-label="Drift">DRIFT</button>
+      <button id="touch-nos" class="touch-btn touch-chip-btn touch-nos-btn" aria-label="Nitro">NOS</button>
+      <button id="touch-brake" class="touch-btn touch-pedal-btn touch-brake-btn" aria-label="Brake"><span class="touch-pedal-icon">◀◀</span>BRAKE</button>
+      <button id="touch-gas" class="touch-btn touch-pedal-btn touch-gas-btn" aria-label="Gas"><span class="touch-pedal-icon">▶▶</span>GAS</button>
     </div>
   </div>
 
@@ -287,11 +288,14 @@
     <span id="start-prompt-text">HOLD ▲ TO ACCELERATE</span>
   </div>
 
-  <!-- ============ ORIENTATION / ROTATE HINT ============ -->
-  <div id="rotate-hint" class="hidden">
+  <!-- ============ ORIENTATION GATE (landscape required on mobile) ============ -->
+  <div id="orientation-gate" class="hidden">
     <div class="rotate-icon">📱</div>
-    <p>For the best experience, try landscape —<br/>but portrait works great too!</p>
-    <button id="rotate-dismiss" class="btn-secondary">CONTINUE</button>
+    <p>SUNNY HIGHWAY plays best in landscape.<br/>Turn your phone sideways, or lock it below.</p>
+    <button id="orientation-gate-btn" class="btn-primary">
+      <span class="btn-primary-glow"></span>
+      ↻ GO HORIZONTAL
+    </button>
   </div>
 
   <!-- ============ PAUSE OVERLAY ============ -->
@@ -379,13 +383,17 @@
   <!-- ============ THREE.JS CANVAS MOUNT ============ -->
   <canvas id="game-canvas"></canvas>
 
+</div><!-- /#app-shell -->
+
   <!-- ============ SCRIPTS ============ -->
   <!-- Game portal SDK: ads, leaderboard tracking, lifecycle hooks.
-       Served from the game's own bundle at ./sdk.js per the portal's
-       integration docs (a real portal host overwrites this file with
-       its own build at deploy time). Falls back to a safe standalone/
-       offline mode automatically when not embedded in a portal iframe
-       (see the script itself).
+       This is the real XandboxGames GamePortalSDK (v1.5.0), vendored
+       here as ./sdk.js — see the file's header for where it came from.
+       It talks to the actual XandboxGames host via postMessage when
+       this game is played inside their iframe, and quietly self-
+       resolves (simulated timers, local storage) when it's opened
+       directly — e.g. local dev, or any other embed — so the game
+       stays fully playable outside the portal too.
 
        `defer` is important here: a plain blocking <script src> that
        hangs (rather than failing fast — exactly what some ad-blocking

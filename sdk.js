@@ -1,175 +1,390 @@
-// =========================================================
-// GamePortalSDK — client reference implementation (./sdk.js)
-//
-// This file matches the documented Complete Client-Side SDK API
-// Code Reference exactly (method names, option shapes, callback
-// signatures): ready, gameplayStart, gameplayStop, showInterstitial,
-// showRewardedAd, purchaseItem, getPurchases, trackScore,
-// invitePlayer, saveData, loadData, onMuteChange.
-//
-// A real portal host serves its own sdk.js (with live ads, a real
-// leaderboard, real payments, etc.) at this same relative path when
-// the game is deployed there — that build overwrites/replaces this
-// file. Until then, this is a safe **standalone/offline fallback**:
-// every method is a real, working implementation, just backed by
-// local storage and simulated ad overlays instead of a live portal
-// backend, so the game is fully playable and testable outside any
-// portal iframe.
-//
-// If a portal has already defined window.GamePortalSDK before this
-// script runs, we never touch it — their real SDK always wins.
-// =========================================================
+/**
+ * XandboxGames / GamePortalSDK Client-Side Library (v1.5.0)
+ * Standalone SDK for sandboxed HTML5 games on PaperCroft XandboxGames.
+ * Compatible with CrazyGames & Xandbox runtime protocols.
+ *
+ * Fetched from https://www.papercroft.com/sdk.js and vendored here
+ * verbatim (this is the actual portal script, not a local fallback —
+ * see js/ads/AdManager.js for how the game calls into it). It talks
+ * to the real XandboxGames host via postMessage when embedded in
+ * their iframe, and quietly no-ops/self-resolves when it isn't (e.g.
+ * played directly, or during local dev), so the game stays fully
+ * testable outside the portal too.
+ */
+(function (global) {
+  'use strict';
 
-(function () {
-  if (window.GamePortalSDK) return;
-
-  const STORAGE_PREFIX = 'gameportalsdk:';
-  const muteListeners = [];
-
-  function safeGet(key) {
-    try { return localStorage.getItem(key); } catch (e) { return null; }
-  }
-  function safeSet(key, value) {
-    try { localStorage.setItem(key, value); } catch (e) { /* storage blocked — ignore */ }
+  // Prevent multiple initializations
+  if (global.GamePortalSDK) {
+    return;
   }
 
-  // ---------------------------------------------------------
-  // Tiny simulated ad overlay, shared by showInterstitial and
-  // showRewardedAd so standalone play actually exercises the
-  // same UX shape (a countdown, a dismiss) a real ad would.
-  // ---------------------------------------------------------
-  function runSimulatedAd(label, seconds, onDone) {
-    let overlay;
-    try {
-      overlay = document.createElement('div');
-      overlay.setAttribute('style', [
-        'position:fixed', 'inset:0', 'z-index:999999',
-        'background:rgba(6,8,16,0.92)', 'color:#fff',
-        'display:flex', 'flex-direction:column', 'align-items:center', 'justify-content:center',
-        'font:600 16px/1.4 system-ui,sans-serif', 'letter-spacing:0.03em',
-        'gap:10px',
-      ].join(';'));
-      const title = document.createElement('div');
-      title.textContent = label;
-      title.style.opacity = '0.7';
-      title.style.fontSize = '12px';
-      title.style.textTransform = 'uppercase';
-      const count = document.createElement('div');
-      count.style.fontSize = '38px';
-      overlay.appendChild(title);
-      overlay.appendChild(count);
-      document.body.appendChild(overlay);
+  var isEmbedded = (global.parent && global.parent !== global);
+  var pendingCallbacks = {};
+  var callbackCounter = 1;
+  var audioMuted = false;
+  var muteListeners = [];
+  var isReadySent = false;
+  var currentScore = 0;
+  var isPlaying = false;
 
-      let remaining = seconds;
-      count.textContent = String(remaining);
-      const tick = setInterval(() => {
-        remaining -= 1;
-        if (remaining <= 0) {
-          clearInterval(tick);
-          overlay.remove();
-          onDone();
-        } else {
-          count.textContent = String(remaining);
-        }
-      }, 1000);
-    } catch (e) {
-      // No DOM available (or something went wrong building the overlay) —
-      // don't block gameplay on a cosmetic simulation.
-      if (overlay && overlay.remove) overlay.remove();
-      onDone();
+  // Local fallback storage for standalone offline execution
+  var localDataStore = {};
+  var localPurchases = ['starter_skin'];
+
+  function generateReqId() {
+    return 'req_' + Date.now() + '_' + (callbackCounter++);
+  }
+
+  function postToParent(type, payload, reqId) {
+    var message = {
+      source: 'XANDBOX_GAME_SDK',
+      type: type,
+      payload: payload || {},
+      requestId: reqId || null,
+      timestamp: Date.now()
+    };
+
+    if (isEmbedded) {
+      try {
+        global.parent.postMessage(message, '*');
+      } catch (err) {
+        console.warn('[GamePortalSDK] postMessage dispatch failed:', err);
+      }
+    } else {
+      console.log('[GamePortalSDK (Standalone Mode)] PostMessage:', message);
     }
   }
 
-  const GamePortalSDK = {
+  // Listen for platform events from host
+  if (typeof global.addEventListener === 'function') {
+    global.addEventListener('message', function (event) {
+      if (!event.data || typeof event.data !== 'object') return;
+      var data = event.data;
 
-    // ---- Lifecycle -----------------------------------------------------
+      // Handle platform mute
+      if (data.type === 'PLATFORM_MUTE_STATE') {
+        audioMuted = Boolean(data.payload && data.payload.muted);
+        for (var i = 0; i < muteListeners.length; i++) {
+          try {
+            muteListeners[i](audioMuted);
+          } catch (e) {
+            console.error('[GamePortalSDK] Mute listener error:', e);
+          }
+        }
+      }
 
-    ready() {
-      // Standalone mode has no host preloader to dismiss — just log so
-      // it's visible during local testing.
-      console.log('[GamePortalSDK] ready() — standalone mode, no portal host detected');
+      // Handle async responses mapped by requestId
+      if (data.requestId && pendingCallbacks[data.requestId]) {
+        var handler = pendingCallbacks[data.requestId];
+        delete pendingCallbacks[data.requestId];
+        try {
+          handler(data.payload || {});
+        } catch (e) {
+          console.error('[GamePortalSDK] Callback error:', e);
+        }
+        return;
+      }
+
+      // Handle Ad lifecycle responses
+      if (data.type === 'PLATFORM_AD_STARTED' && data.adId && pendingCallbacks[data.adId + '_started']) {
+        pendingCallbacks[data.adId + '_started']();
+      } else if (data.type === 'PLATFORM_AD_COMPLETED' && data.adId && pendingCallbacks[data.adId + '_completed']) {
+        var compCb = pendingCallbacks[data.adId + '_completed'];
+        delete pendingCallbacks[data.adId + '_started'];
+        delete pendingCallbacks[data.adId + '_completed'];
+        delete pendingCallbacks[data.adId + '_failed'];
+        compCb();
+      } else if (data.type === 'PLATFORM_REWARDED_GRANTED' && data.adId && pendingCallbacks[data.adId + '_rewarded']) {
+        var rewCb = pendingCallbacks[data.adId + '_rewarded'];
+        delete pendingCallbacks[data.adId + '_started'];
+        delete pendingCallbacks[data.adId + '_rewarded'];
+        delete pendingCallbacks[data.adId + '_skipped'];
+        rewCb();
+      } else if (data.type === 'PLATFORM_AD_FAILED' && data.adId && pendingCallbacks[data.adId + '_failed']) {
+        var failCb = pendingCallbacks[data.adId + '_failed'];
+        delete pendingCallbacks[data.adId + '_started'];
+        delete pendingCallbacks[data.adId + '_completed'];
+        delete pendingCallbacks[data.adId + '_failed'];
+        failCb();
+      } else if (data.type === 'PLATFORM_REWARDED_SKIPPED' && data.adId && pendingCallbacks[data.adId + '_skipped']) {
+        var skipCb = pendingCallbacks[data.adId + '_skipped'];
+        delete pendingCallbacks[data.adId + '_started'];
+        delete pendingCallbacks[data.adId + '_rewarded'];
+        delete pendingCallbacks[data.adId + '_skipped'];
+        skipCb();
+      }
+    });
+  }
+
+  var SDK = {
+    version: '1.5.0',
+
+    /**
+     * Signals platform that assets have loaded; hides preloader overlay.
+     */
+    ready: function () {
+      if (isReadySent) return;
+      isReadySent = true;
+      postToParent('SDK_READY', { sdkVersion: SDK.version });
     },
 
-    gameplayStart() {
-      console.log('[GamePortalSDK] gameplayStart()');
+    /**
+     * Signals that active gameplay has started (resumes timers/telemetry).
+     */
+    gameplayStart: function () {
+      isPlaying = true;
+      postToParent('SDK_GAMEPLAY_START', {});
     },
 
-    gameplayStop() {
-      console.log('[GamePortalSDK] gameplayStop()');
+    /**
+     * Signals that gameplay has paused or ended (exits to menu/game over).
+     */
+    gameplayStop: function () {
+      isPlaying = false;
+      postToParent('SDK_GAMEPLAY_STOP', {});
     },
 
-    // ---- Ads -------------------------------------------------------------
+    /**
+     * Tracks level attempt.
+     */
+    levelStart: function (level) {
+      postToParent('SDK_LEVEL_START', { level: Number(level) || 1 });
+    },
 
-    showInterstitial(options) {
-      console.log('[GamePortalSDK] showInterstitial() called — standalone mode');
-      const opts = options || {};
-      try { if (opts.onStarted) opts.onStarted(); } catch (e) {}
-      console.log('[GamePortalSDK] showInterstitial() → onStarted (simulated ad playing)');
-      runSimulatedAd('Advertisement · standalone mode', 3, () => {
-        console.log('[GamePortalSDK] showInterstitial() → onCompleted');
-        try { if (opts.onCompleted) opts.onCompleted(); } catch (e) {}
+    /**
+     * Tracks level completion and score.
+     */
+    levelComplete: function (level, score) {
+      postToParent('SDK_LEVEL_COMPLETE', {
+        level: Number(level) || 1,
+        score: Number(score) || 0
       });
     },
 
-    showRewardedAd(options) {
-      console.log('[GamePortalSDK] showRewardedAd() called — standalone mode');
-      const opts = options || {};
-      try { if (opts.onStarted) opts.onStarted(); } catch (e) {}
-      console.log('[GamePortalSDK] showRewardedAd() → onStarted (simulated ad playing)');
-      runSimulatedAd('Rewarded ad · standalone mode', 3, () => {
-        // Standalone mode always plays the simulated ad to completion,
-        // so the reward path is what actually gets exercised.
-        console.log('[GamePortalSDK] showRewardedAd() → onRewarded');
-        try { if (opts.onRewarded) opts.onRewarded(); } catch (e) {}
+    /**
+     * Tracks level failure.
+     */
+    levelFail: function (level) {
+      postToParent('SDK_LEVEL_FAIL', { level: Number(level) || 1 });
+    },
+
+    /**
+     * Requests and displays an interstitial ad.
+     * @param {Object} opts - { onStarted, onCompleted, onFailed }
+     */
+    showInterstitial: function (opts) {
+      opts = opts || {};
+      var adId = 'ad_' + Date.now() + '_' + (callbackCounter++);
+
+      if (opts.onStarted) pendingCallbacks[adId + '_started'] = opts.onStarted;
+      if (opts.onCompleted) pendingCallbacks[adId + '_completed'] = opts.onCompleted;
+      if (opts.onFailed) pendingCallbacks[adId + '_failed'] = opts.onFailed;
+
+      if (!isEmbedded) {
+        if (opts.onStarted) setTimeout(opts.onStarted, 100);
+        setTimeout(function () {
+          if (opts.onCompleted) opts.onCompleted();
+        }, 1500);
+        return;
+      }
+
+      postToParent('SDK_SHOW_INTERSTITIAL', { adId: adId });
+    },
+
+    /**
+     * Requests and displays a rewarded ad for in-game perks.
+     * @param {Object} opts - { onStarted, onRewarded, onSkipped }
+     */
+    showRewardedAd: function (opts) {
+      opts = opts || {};
+      var adId = 'rew_' + Date.now() + '_' + (callbackCounter++);
+
+      if (opts.onStarted) pendingCallbacks[adId + '_started'] = opts.onStarted;
+      if (opts.onRewarded) pendingCallbacks[adId + '_rewarded'] = opts.onRewarded;
+      if (opts.onSkipped) pendingCallbacks[adId + '_skipped'] = opts.onSkipped;
+
+      if (!isEmbedded) {
+        if (opts.onStarted) setTimeout(opts.onStarted, 100);
+        setTimeout(function () {
+          if (opts.onRewarded) opts.onRewarded();
+        }, 2000);
+        return;
+      }
+
+      postToParent('SDK_SHOW_REWARDED_AD', { adId: adId });
+    },
+
+    /**
+     * Opens platform token purchase modal.
+     * @param {string} itemId
+     * @param {Function} cb - (success: boolean, receipt: object) => void
+     */
+    purchaseItem: function (itemId, cb) {
+      var reqId = generateReqId();
+
+      if (!isEmbedded) {
+        setTimeout(function () {
+          localPurchases.push(itemId);
+          if (cb) cb(true, { itemId: itemId, transactionId: 'local_tx_' + Date.now() });
+        }, 300);
+        return;
+      }
+
+      if (cb) {
+        pendingCallbacks[reqId] = function (res) {
+          cb(Boolean(res.success), res.receipt || null);
+        };
+      }
+
+      postToParent('SDK_PURCHASE_ITEM', { itemId: itemId }, reqId);
+    },
+
+    /**
+     * Queries unlocked items owned by the active player.
+     * @param {Function} cb - (purchases: Array<string>) => void
+     */
+    getPurchases: function (cb) {
+      var reqId = generateReqId();
+
+      if (!isEmbedded) {
+        setTimeout(function () {
+          if (cb) cb(localPurchases.slice());
+        }, 50);
+        return;
+      }
+
+      if (cb) {
+        pendingCallbacks[reqId] = function (res) {
+          cb(res.purchases || []);
+        };
+      }
+
+      postToParent('SDK_GET_PURCHASES', {}, reqId);
+    },
+
+    /**
+     * Submits score to the global leaderboard.
+     * @param {number} score
+     */
+    trackScore: function (score) {
+      currentScore = Number(score) || 0;
+      postToParent('SDK_TRACK_SCORE', { score: currentScore });
+    },
+
+    /**
+     * Dispatches custom analytics event.
+     * @param {string} name
+     * @param {object} data
+     */
+    trackEvent: function (name, data) {
+      postToParent('SDK_TRACK_EVENT', {
+        name: String(name || 'generic_event'),
+        data: data || {}
       });
     },
 
-    // ---- Monetization / store --------------------------------------------
+    /**
+     * Saves custom progress to user cloud storage.
+     * @param {string} key
+     * @param {any} data
+     */
+    saveData: function (key, data) {
+      if (!isEmbedded) {
+        try {
+          localDataStore[key] = data;
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('xandbox_cloud_' + key, JSON.stringify(data));
+          }
+        } catch (e) {}
+        return;
+      }
 
-    purchaseItem(itemId, callback) {
-      console.warn('[GamePortalSDK] purchaseItem("' + itemId + '") — no payment provider in standalone mode');
-      if (typeof callback === 'function') callback(false, null);
+      postToParent('SDK_SAVE_DATA', { key: String(key), data: data });
     },
 
-    getPurchases(callback) {
-      const raw = safeGet(STORAGE_PREFIX + 'purchases');
-      let items = [];
-      try { items = raw ? JSON.parse(raw) : []; } catch (e) { items = []; }
-      if (typeof callback === 'function') callback(items);
+    /**
+     * Loads saved progress from cloud storage.
+     * @param {string} key
+     * @param {Function} cb - (data: any) => void
+     */
+    loadData: function (key, cb) {
+      var reqId = generateReqId();
+
+      if (!isEmbedded) {
+        var result = localDataStore[key];
+        if (result === undefined && typeof localStorage !== 'undefined') {
+          try {
+            var raw = localStorage.getItem('xandbox_cloud_' + key);
+            if (raw) result = JSON.parse(raw);
+          } catch (e) {}
+        }
+        setTimeout(function () {
+          if (cb) cb(result);
+        }, 50);
+        return;
+      }
+
+      if (cb) {
+        pendingCallbacks[reqId] = function (res) {
+          cb(res.data);
+        };
+      }
+
+      postToParent('SDK_LOAD_DATA', { key: String(key) }, reqId);
     },
 
-    // ---- Leaderboard -------------------------------------------------------
+    /**
+     * Triggers platform invite modal to invite friends or party members.
+     * @param {Object} opts - { gameId, lobbyId, message }
+     * @param {Function} cb - (success: boolean) => void
+     */
+    invitePlayer: function (opts, cb) {
+      opts = opts || {};
+      var reqId = generateReqId();
 
-    trackScore(score) {
-      console.log('[GamePortalSDK] trackScore(' + score + ')');
+      if (cb) {
+        pendingCallbacks[reqId] = function (res) {
+          cb(Boolean(res.success));
+        };
+      }
+
+      postToParent('SDK_INVITE_PLAYER', {
+        gameId: opts.gameId || null,
+        lobbyId: opts.lobbyId || null,
+        message: opts.message || 'Join my game on XandboxGames!'
+      }, reqId);
     },
 
-    // ---- Multiplayer / social -----------------------------------------------
-
-    invitePlayer(options, callback) {
-      console.warn('[GamePortalSDK] invitePlayer() — no multiplayer backend in standalone mode', options);
-      if (typeof callback === 'function') callback(false);
+    /**
+     * Helper to subscribe to platform audio mute toggles.
+     * @param {Function} callback - (isMuted: boolean) => void
+     */
+    onMuteChange: function (callback) {
+      if (typeof callback === 'function') {
+        muteListeners.push(callback);
+        callback(audioMuted);
+      }
     },
 
-    // ---- Cloud storage ---------------------------------------------------
-
-    saveData(key, data) {
-      safeSet(STORAGE_PREFIX + key, JSON.stringify(data));
+    /**
+     * Returns true if the game is running inside the XandboxGames iframe.
+     */
+    isEmbedded: function () {
+      return isEmbedded;
     },
 
-    loadData(key, callback) {
-      const raw = safeGet(STORAGE_PREFIX + key);
-      let data = null;
-      try { data = raw ? JSON.parse(raw) : null; } catch (e) { data = null; }
-      if (typeof callback === 'function') callback(data);
-    },
-
-    // ---- Audio control -----------------------------------------------------
-
-    onMuteChange(callback) {
-      if (typeof callback === 'function') muteListeners.push(callback);
-    },
+    /**
+     * Returns the current mute status.
+     */
+    isMuted: function () {
+      return audioMuted;
+    }
   };
 
-  window.GamePortalSDK = GamePortalSDK;
-})();
+  // Expose globally under standard and alias names
+  global.GamePortalSDK = SDK;
+  global.XandboxSDK = SDK;
+  global.CrazyGamesSDK = SDK;
+
+})(typeof window !== 'undefined' ? window : this);

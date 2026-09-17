@@ -14,6 +14,7 @@ import { UIManager } from './ui/UIManager.js';
 import { AudioManager } from './audio/AudioManager.js';
 import { AdManager } from './ads/AdManager.js';
 import { Storage } from './utils/Storage.js';
+import { OrientationLock } from './utils/OrientationLock.js';
 
 const STATE = {
   BOOT: 'boot',
@@ -60,10 +61,33 @@ export class Game {
     this.usedPauseNosAdThisRun = false;
     this.nosAdChipCooldownUntil = 0;
 
+    // Landscape is required on touch devices — see _checkOrientationGate().
+    this.orientationLock = new OrientationLock();
+    this._orientationBlocked = false;
+
     this._bindUIEvents();
     this._handleResize();
-    window.addEventListener('resize', () => this._handleResize());
-    window.addEventListener('orientationchange', () => setTimeout(() => this._handleResize(), 200));
+    this._checkOrientationGate();
+    window.addEventListener('resize', () => { this._handleResize(); this._checkOrientationGate(); });
+    window.addEventListener('orientationchange', () => setTimeout(() => { this._handleResize(); this._checkOrientationGate(); }, 200));
+  }
+
+  // Shows/hides the full-screen "GO HORIZONTAL" gate. Runs regardless of
+  // game state (boot/menu/playing/paused) since landscape is required
+  // everywhere on touch devices, not just mid-race.
+  _checkOrientationGate() {
+    this.orientationLock.syncWithRealOrientation();
+    const needsGate = this.input.isTouchDevice
+      && this.orientationLock.isPortrait()
+      && !this.orientationLock.forced;
+
+    if (needsGate && !this._orientationBlocked) {
+      this._orientationBlocked = true;
+      this.ui.showOrientationGate();
+    } else if (!needsGate && this._orientationBlocked) {
+      this._orientationBlocked = false;
+      this.ui.hideOrientationGate();
+    }
   }
 
   async boot() {
@@ -172,7 +196,9 @@ export class Game {
     el.btnRetry.addEventListener('click', () => { this.audio.playUIClick(); this._startGame(); });
     el.btnMenuFromOver.addEventListener('click', () => { this.audio.playUIClick(); this._goToMenu(); });
 
-    el.rotateDismiss.addEventListener('click', () => { this.ui.hideRotateHint(); });
+    el.orientationGateBtn.addEventListener('click', () => {
+      this.orientationLock.request().then(() => this._checkOrientationGate());
+    });
 
     // --- Rewarded-ad actions (all optional, player-initiated) ---
     if (el.btnWatchAdNos) {
@@ -354,10 +380,7 @@ export class Game {
     this.audio.startEngine();
     this.ads.notifyGameplayStart();
 
-    if (this.ui.checkOrientationHint() && !this._rotateHintShown) {
-      this._rotateHintShown = true;
-      this.ui.showRotateHint();
-    }
+    this._checkOrientationGate();
   }
 
   _pause() {
@@ -548,6 +571,16 @@ export class Game {
   }
 
   _update(dt) {
+    // Landscape is required on touch devices — freeze gameplay input/physics
+    // while the orientation gate is up, but keep camera/road/theme ticking
+    // (same treatment as pause) so nothing looks frozen or jumps on resume.
+    if (this._orientationBlocked) {
+      if (this.themeManager) this.themeManager.update(dt);
+      if (this.cameraRig && this.playerCar) this.cameraRig.update(dt, this.playerCar);
+      if (this.road && this.playerCar) this.road.update(this.playerCar.distanceTravelled);
+      return;
+    }
+
     if (this.input.consumePauseRequest()) {
       if (this.state === STATE.PLAYING || this.state === STATE.RACE_PLAYING) this._pause();
       else if (this.state === STATE.PAUSED) this._resume();

@@ -94,8 +94,8 @@ export class UIManager {
 
       touchControls: document.getElementById('touch-controls'),
 
-      rotateHint: document.getElementById('rotate-hint'),
-      rotateDismiss: document.getElementById('rotate-dismiss'),
+      orientationGate: document.getElementById('orientation-gate'),
+      orientationGateBtn: document.getElementById('orientation-gate-btn'),
 
       pauseOverlay: document.getElementById('pause-overlay'),
       btnResume: document.getElementById('btn-resume'),
@@ -308,9 +308,9 @@ export class UIManager {
     if (this.el.racePayoutCard) this.el.racePayoutCard.classList.remove('hidden');
   }
 
-  // ---------- Rotate hint ----------
-  showRotateHint() { this.el.rotateHint.classList.remove('hidden'); }
-  hideRotateHint() { this.el.rotateHint.classList.add('hidden'); }
+  // ---------- Orientation gate (landscape required on mobile) ----------
+  showOrientationGate() { this.el.orientationGate.classList.remove('hidden'); }
+  hideOrientationGate() { this.el.orientationGate.classList.add('hidden'); }
 
   // ---------- In-game HUD ----------
   showHUD(isTouch, mode = 'endless') {
@@ -556,9 +556,4 @@ export class UIManager {
   }
 
   // ---------- Orientation ----------
-  checkOrientationHint() {
-    const isPortraitPhone = window.innerHeight > window.innerWidth && window.innerWidth < 560;
-    // We support both orientations, so this is just a one-time friendly nudge, not a blocker.
-    return isPortraitPhone;
-  }
 }

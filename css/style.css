@@ -97,6 +97,30 @@ html, body {
   -webkit-tap-highlight-color: transparent;
 }
 
+#app-shell {
+  width: 100%;
+  height: 100%;
+}
+
+/* CSS orientation-lock fallback (see js/utils/OrientationLock.js).
+   Rotates the whole app 90° and swaps its footprint to vh/vw so it
+   fills the screen and *looks* landscape even while the physical
+   device is still portrait. `transform` on #app-shell makes it the
+   containing block for every position:fixed child (canvas, HUD,
+   menus, modals), so inset:0 elements reposition correctly with it.
+   Safe-area insets aren't re-mapped to the rotated edges here — a
+   minor cosmetic gap on notched phones is an acceptable trade-off
+   for working landscape play everywhere. */
+html.force-landscape #app-shell {
+  position: fixed;
+  top: 0;
+  left: 100%;
+  width: 100vh;
+  height: 100vw;
+  transform-origin: 0 0;
+  transform: rotate(90deg);
+}
+
 #game-canvas {
   position: fixed;
   inset: 0;
@@ -976,11 +1000,13 @@ kbd {
 }
 #touch-actions {
   position: fixed;
-  bottom: calc(16px + var(--safe-bottom));
-  right: calc(16px + var(--safe-right));
+  bottom: 0;
+  right: calc(10px + var(--safe-right));
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  grid-template-columns: auto auto;
+  grid-template-rows: auto 1fr;
+  align-items: end;
+  column-gap: 10px;
   pointer-events: auto;
 }
 
@@ -1012,81 +1038,113 @@ kbd {
   box-shadow: 0 6px 16px rgba(28,43,34,0.18);
 }
 
-.touch-action-btn {
-  width: clamp(64px, 16vw, 84px);
-  height: clamp(64px, 16vw, 84px);
-  border-radius: 50%;
-  font-size: 0.72rem;
-  letter-spacing: 0.02em;
-  box-shadow: 0 6px 16px rgba(28,43,34,0.2);
+/* GAS and BRAKE are now full-height pedals anchored to the bottom
+   edge (thumb-reachable, no dead zone below them) instead of round
+   buttons floating in a grid — GAS is the bigger, outer pedal since
+   it's held far more often than BRAKE. DRIFT/NOS stay small round
+   chips stacked above the pedals, out of the way of the driving thumb. */
+.touch-pedal-btn {
+  width: clamp(58px, 15vw, 78px);
+  height: clamp(112px, 30vw, 168px);
+  border-radius: 22px 22px 10px 10px;
+  padding-bottom: calc(14px + var(--safe-bottom));
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: 0 -4px 18px rgba(28,43,34,0.22);
+  grid-row: 1 / 3;
 }
 .touch-gas-btn {
-  background: radial-gradient(circle at 35% 30%, #58d98a, var(--green));
+  background: linear-gradient(180deg, #6bec9a 0%, var(--green) 55%, var(--green-deep) 100%);
   border: 3px solid var(--green-deep);
+  border-bottom: none;
   color: #0d3320;
   grid-column: 2;
-  grid-row: 1;
+  height: clamp(130px, 34vw, 190px);
 }
 .touch-brake-btn {
-  background: radial-gradient(circle at 35% 30%, #ff8080, var(--red));
+  background: linear-gradient(180deg, #ff9a9a 0%, var(--red) 55%, #b93338 100%);
   border: 3px solid #b93338;
+  border-bottom: none;
   color: #3a0d0e;
   grid-column: 1;
-  grid-row: 1;
+}
+.touch-pedal-icon { font-size: 1.3rem; line-height: 1; }
+
+.touch-chip-btn {
+  width: clamp(46px, 12vw, 58px);
+  height: clamp(46px, 12vw, 58px);
+  border-radius: 50%;
+  font-size: 0.6rem;
+  letter-spacing: 0.02em;
+  box-shadow: 0 6px 16px rgba(28,43,34,0.2);
+  margin-bottom: 8px;
 }
 .touch-drift-btn {
   background: radial-gradient(circle at 35% 30%, #fff0b0, var(--yellow));
   border: 3px solid var(--yellow-deep);
   color: #4a3400;
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 1;
+  justify-self: center;
 }
 .touch-nos-btn {
   background: radial-gradient(circle at 35% 30%, #ffffff, #e9e9e9);
   border: 3px solid #b9b9b9;
   color: #2a2a2a;
   grid-column: 2;
-  grid-row: 2;
+  grid-row: 1;
+  justify-self: center;
 }
 
 @media (orientation: landscape) and (max-height: 480px) {
-  #speedo-cluster { transform: scale(0.82); transform-origin: bottom left; }
-  #touch-steer, #touch-actions { transform: scale(0.9); }
-  #touch-steer { transform-origin: bottom left; }
-  #touch-actions { transform-origin: bottom right; }
+  html:not(.force-landscape) #speedo-cluster { transform: scale(0.82); transform-origin: bottom left; }
+  html:not(.force-landscape) #touch-steer, html:not(.force-landscape) #touch-actions { transform: scale(0.9); }
+  html:not(.force-landscape) #touch-steer { transform-origin: bottom left; }
+  html:not(.force-landscape) #touch-actions { transform-origin: bottom right; }
 }
 
+/* `orientation` media queries read the *physical* viewport, which never
+   flips while the CSS fallback above is active (a transform doesn't
+   change window.innerWidth/innerHeight) — so these are scoped to
+   :not(.force-landscape) and mirrored below for the forced case. */
 @media (orientation: portrait) and (max-width: 560px) {
-  #speedo-cluster { bottom: calc(150px + var(--safe-bottom)); }
-  #nitro-panel { top: auto; bottom: calc(150px + var(--safe-bottom)); right: calc(14px + var(--safe-right)); }
+  html:not(.force-landscape) #speedo-cluster { bottom: calc(150px + var(--safe-bottom)); }
+  html:not(.force-landscape) #nitro-panel { top: auto; bottom: calc(150px + var(--safe-bottom)); right: calc(14px + var(--safe-right)); }
 }
+
+html.force-landscape #speedo-cluster { transform: scale(0.82); transform-origin: bottom left; }
+html.force-landscape #touch-steer, html.force-landscape #touch-actions { transform: scale(0.9); }
+html.force-landscape #touch-steer { transform-origin: bottom left; }
+html.force-landscape #touch-actions { transform-origin: bottom right; }
 
 body:not(.is-touch) #touch-controls { display: none; }
 body.is-touch #speedo-cluster { bottom: calc(130px + var(--safe-bottom)); }
 
 /* =========================================================
-   ROTATE HINT
+   ORIENTATION GATE — landscape required on mobile
    ========================================================= */
-#rotate-hint {
+#orientation-gate {
   position: fixed;
   inset: 0;
-  z-index: 150;
-  background: rgba(28,43,34,0.9);
+  z-index: 400; /* above every modal (max 200) and the touch controls */
+  background: rgba(28,43,34,0.96);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   text-align: center;
   padding: 20px;
-  gap: 16px;
+  gap: 18px;
 }
 .rotate-icon { font-size: 3rem; animation: rotateWiggle 1.6s ease-in-out infinite; flex: none; }
 @keyframes rotateWiggle {
   0%, 100% { transform: rotate(0deg); }
   50% { transform: rotate(90deg); }
 }
-#rotate-hint p { color: var(--white); font-weight: 500; font-size: 0.95rem; max-width: 320px; flex: none; }
-#rotate-hint .btn-secondary { flex: none; width: auto; min-width: 160px; padding: 12px 28px; }
+#orientation-gate p { color: var(--white); font-weight: 500; font-size: 0.95rem; max-width: 320px; flex: none; }
+#orientation-gate .btn-primary { flex: none; width: auto; min-width: 220px; padding: 14px 32px; }
 
 /* =========================================================
    GAME OVER SCREEN
