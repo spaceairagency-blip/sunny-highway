@@ -1,0 +1,7 @@
+03/09/2026 ---> Version 1.0.1
+04/09/2026 ---> Version 2.0.0
+09/09/2026 ---> Version 2.0.1
+12/09/2026 ---> Version 2.5.0
+[===Currently working on some bug fixes and some Functions.===]
+          [[[===Expected Next Version: 3.5.0===]]]
+
